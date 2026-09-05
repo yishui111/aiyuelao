@@ -1,0 +1,31 @@
+# 运行时与工具包
+/tools/
+# 数据与日志
+/data/
+/logs/
+*.log
+# 构建产物与依赖
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+target/
+*.egg-info/
+dist/
+build/
+# 压缩包与二进制
+*.zip
+*.tar
+*.gz
+*.exe
+*.pdb
+*.jar
+# 大文件媒体
+*.mp4
+*.MP4
+*.mkv
+*.avi
+# 系统文件
+Thumbs.db
+.DS_Store
