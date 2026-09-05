@@ -31,9 +31,22 @@ Start-Process -FilePath "$ROOT\projects\ai-powered-matching-algorithm\.venv\Scri
   -WorkingDirectory "$ROOT\projects\ai-powered-matching-algorithm" `
   -WindowStyle Hidden -RedirectStandardOutput "$LOGS\matching-algo.log" -RedirectStandardError "$LOGS\matching-algo-err.log"
 
-Write-Host "[6/9] GlowMeet backend (8000, memory mode) + frontend (3000)..."
-# GlowMeet 需要环境变量，通过 cmd 设置后启动
-Start-Process -FilePath "cmd" -ArgumentList "/c","set PERSISTENCE=memory&& set PORT=8013&& set X_CLIENT_ID=dev-client-id&& set X_CLIENT_SECRET=dev-client-secret&& set X_REDIRECT_URL=http://localhost:3000/auth/x/callback&& set APP_JWT_SECRET=dev-secret&& glowmeet.exe > ..\..\logs\glowmeet-cmd.log 2>&1" -WorkingDirectory "$ROOT\projects\GlowMeet\backend" -WindowStyle Hidden
+Write-Host "[6/9] GlowMeet backend (8013, memory mode) + frontend (3000)..."
+# GlowMeet 需要环境变量：用 ProcessStartInfo 注入（cmd 内联 set 的方式不可靠）
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "$ROOT\projects\GlowMeet\backend\glowmeet.exe"
+$psi.WorkingDirectory = "$ROOT\projects\GlowMeet\backend"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$psi.RedirectStandardOutput = $false
+$psi.RedirectStandardError = $false
+$psi.EnvironmentVariables["PERSISTENCE"] = "memory"
+$psi.EnvironmentVariables["PORT"] = "8013"
+$psi.EnvironmentVariables["X_CLIENT_ID"] = "dev-client-id"
+$psi.EnvironmentVariables["X_CLIENT_SECRET"] = "dev-client-secret"
+$psi.EnvironmentVariables["X_REDIRECT_URL"] = "http://localhost:3000/auth/x/callback"
+$psi.EnvironmentVariables["APP_JWT_SECRET"] = "dev-secret"
+[System.Diagnostics.Process]::Start($psi) | Out-Null
 Start-Process -FilePath "cmd" -ArgumentList "/c","npm run dev > ..\..\logs\glowmeet-web.log 2>&1" -WorkingDirectory "$ROOT\projects\GlowMeet\web" -WindowStyle Hidden
 
 Write-Host "[7/9] Shidduch backend (8010) + frontend (5174)..."
