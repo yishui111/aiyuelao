@@ -278,6 +278,15 @@ def get_user(user_id: str):
     return u
 
 
+@app.delete("/users/{user_id}")
+def delete_user(user_id: str):
+    with _vec_lock:
+        if USERS.pop(user_id, None) is None:
+            raise HTTPException(404, "user not found")
+        _save()
+    return {"ok": True, "total": len(USERS)}
+
+
 @app.get("/discover/{user_id}")
 async def discover(user_id: str, top_n: int = 10):
     """三层漏斗：硬筛 -> 粗排全量 -> 精排topN -> 最终分 = 粗排50% + 精排50%。"""

@@ -40,7 +40,7 @@ if [ -n "$WANG_JAR" ]; then
 else
   echo "  !! 未找到 wang-ai-agent jar，跳过（先执行 mvnw package）"
 fi
-(cd "$ROOT/projects/wang-ai-agent/wang-ai-agent-frontend" && npm run dev > "$LOGS/wang-frontend.log" 2>&1 &)
+# 已按用户要求停用(2026-09-07): (cd "$ROOT/projects/wang-ai-agent/wang-ai-agent-frontend" && npm run dev > "$LOGS/wang-frontend.log" 2>&1 &)
 
 echo ""
 echo "全部服务已拉起，等待 15 秒后自检..."
