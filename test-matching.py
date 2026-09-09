@@ -217,24 +217,32 @@ print("E. 全服务健康")
 print("=" * 60)
 SERVICES = [
     ("ANL后端", "http://127.0.0.1:3001/api/health"),
-    ("ANL前端", "http://127.0.0.1:5176/"),
+    ("ANL前端", "http://localhost:5176/"),
     ("匹配引擎", "http://127.0.0.1:8014/docs"),
     ("匹配中心", "http://127.0.0.1:8016/health"),
     ("GlowMeet后端", "http://127.0.0.1:8013/health"),
-    ("GlowMeet前端", "http://127.0.0.1:3000/"),
+    ("GlowMeet前端", "http://localhost:3000/"),
     ("Shidduch后端", "http://127.0.0.1:8015/health/ready"),
-    ("Shidduch前端", "http://127.0.0.1:5174/"),
+    ("Shidduch前端", "http://localhost:5174/"),
     ("wang后端", "http://127.0.0.1:8123/api/health/ok"),
-    ("wang前端", "http://127.0.0.1:5175/"),
+    ("wang前端", "http://localhost:5175/"),
 ]
 for name, url in SERVICES:
+    # 用 curl.exe 探测（urllib 在部分环境下会被系统网络层干扰产生假阴性）
     code = 0
-    for attempt in range(3):  # 重试 3 次，排除瞬时抖动/依赖预热
-        code, _ = req(url, timeout=10)
+    for attempt in range(2):
+        try:
+            out = subprocess.run(
+                ["curl.exe", "-s", "-o", "NUL", "-w", "%{http_code}", "--max-time", "8", url],
+                capture_output=True, text=True, timeout=15,
+            ).stdout.strip()
+            code = int(out) if out.isdigit() else 0
+        except Exception:
+            code = 0
         if code == 200:
             break
-        time.sleep(3)
-    check(f"E {name}", code == 200, f"HTTP {code}" + ("（3次重试后仍失败）" if code != 200 else ""))
+        time.sleep(2)
+    check(f"E {name}", code == 200, f"HTTP {code}" + ("（2次重试后仍失败）" if code != 200 else ""))
 
 print()
 print("=" * 60)

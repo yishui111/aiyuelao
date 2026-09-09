@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # AI月老 - 服务看门狗（每 30 秒巡检，服务挂掉自动重启）
 # 用法: powershell -ExecutionPolicy Bypass -File D:\xm\aiyuelao\watchdog.ps1
 # 日志: D:\xm\aiyuelao\logs\watchdog.log
@@ -93,27 +93,26 @@ while ($true) {
         $revived += "Shidduch后端"
     }
     if (-not (Test-Url "http://localhost:8123/api/health/ok")) {
-        Start-BashDetached "/d/xm/aiyuelao/projects/wang-ai-agent" `
-            '"/d/xm/aiyuelao/tools/jdk21-extracted/jdk-21.0.12.1+1/bin/java.exe" -jar target/wang-ai-agent-0.0.1-SNAPSHOT.jar > /d/xm/aiyuelao/logs/wang-backend.log 2>&1'
+        Start-Process -FilePath "$ROOT\tools\start-wang-backend.cmd" -WindowStyle Hidden
         $revived += "wang后端"
     }
 
     # ---- 前端（vite，bash 分离式）----
     if (-not (Test-Url "http://localhost:5176/")) {
-        Start-BashDetached "/d/xm/aiyuelao/projects/ANL" "npm run dev > /d/xm/aiyuelao/logs/anl-frontend.log 2>&1"
+        Start-Process -FilePath "$ROOT\tools\start-frontend-ANL.cmd" -WindowStyle Hidden
         $revived += "ANL前端"
     }
     if (-not (Test-Url "http://localhost:3000/")) {
-        Start-BashDetached "/d/xm/aiyuelao/projects/GlowMeet/web" "npm run dev > /d/xm/aiyuelao/logs/glowmeet-web.log 2>&1"
+        Start-Process -FilePath "$ROOT\tools\start-frontend-GlowMeet.cmd" -WindowStyle Hidden
         $revived += "GlowMeet前端"
     }
     if (-not (Test-Url "http://localhost:5174/")) {
-        Start-BashDetached "/d/xm/aiyuelao/projects/shidduch-app/frontend" "npm run dev > /d/xm/aiyuelao/logs/shidduch-frontend.log 2>&1"
+        Start-Process -FilePath "$ROOT\tools\start-frontend-Shidduch.cmd" -WindowStyle Hidden
         $revived += "Shidduch前端"
     }
     # 2026-09-07 应用户要求停用 wang 前端(5175)的自动拉起：用户不希望它自动启动
     # if (-not (Test-Url "http://localhost:5175/")) {
-    #     Start-BashDetached "/d/xm/aiyuelao/projects/wang-ai-agent/wang-ai-agent-frontend" "npm run dev > /d/xm/aiyuelao/logs/wang-frontend.log 2>&1"
+    #     Start-Process -FilePath "$ROOT\tools\start-frontend-wang.cmd" -WindowStyle Hidden
     #     $revived += "wang前端"
     # }
 
