@@ -1,5 +1,6 @@
 ﻿# ============================================================
 # AI月老 - 服务看门狗（每 30 秒巡检，服务挂掉自动重启）
+# 监控：MySQL + ANL(前后端) + 匹配中心 + wang-ai-agent(前后端)
 # 用法: powershell -ExecutionPolicy Bypass -File D:\xm\aiyuelao\watchdog.ps1
 # 日志: D:\xm\aiyuelao\logs\watchdog.log
 # ============================================================
@@ -8,7 +9,7 @@ $LOGS = "$ROOT\logs"
 New-Item -ItemType Directory -Force -Path $LOGS | Out-Null
 
 function Test-Url($url) {
-    # 用 curl.exe 检测（不走系统代理，避免代理软件开启时误判）
+    # 用 curl.exe 检测（--noproxy 不走系统代理，避免代理软件开启时误判）
     $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 6 $url 2>$null
     return ($code -ge 200 -and $code -lt 500)
 }
@@ -39,13 +40,6 @@ while ($true) {
     $revived = @()
 
     # ---- 数据库 ----
-    if (-not (Test-NetPort 27017)) {
-        Start-Process -FilePath "$ROOT\tools\mongodb-extracted\mongodb-win32-x86_64-windows-8.0.12\bin\mongod.exe" `
-            -ArgumentList "--dbpath","$ROOT\data\mongo","--port","27017","--wiredTigerCacheSizeGB","0.25","--bind_ip","127.0.0.1" `
-            -WindowStyle Hidden -RedirectStandardOutput "$LOGS\mongodb.log" -RedirectStandardError "$LOGS\mongodb-err.log"
-        $revived += "MongoDB"
-        Start-Sleep 5
-    }
     if (-not (Test-NetPort 3306)) {
         Start-Process -FilePath "$ROOT\tools\mysql-extracted\mysql-8.0.42-winx64\bin\mysqld.exe" `
             -ArgumentList "--no-defaults","--datadir=D:/xm/aiyuelao/data/mysql","--port=3306","--console" `
@@ -55,15 +49,9 @@ while ($true) {
     }
 
     # ---- 后端 ----
-    if (-not (Test-Url "http://localhost:3001/api/health")) {
+    if (-not (Test-Url "http://127.0.0.1:3001/api/health")) {
         Start-Hidden "node" "server-minimal.js" "$ROOT\projects\ANL\backend" "$LOGS\anl-backend.log" "$LOGS\anl-backend-err.log"
         $revived += "ANL后端"
-    }
-    if (-not (Test-Url "http://127.0.0.1:8014/docs")) {
-        Start-Hidden "$ROOT\projects\ai-powered-matching-algorithm\.venv\Scripts\python.exe" `
-            @("-m","uvicorn","main:app","--host","127.0.0.1","--port","8014") `
-            "$ROOT\projects\ai-powered-matching-algorithm" "$LOGS\matching-algo.log" "$LOGS\matching-algo-err.log"
-        $revived += "匹配引擎"
     }
     if (-not (Test-Url "http://127.0.0.1:8016/health")) {
         Start-Hidden "$ROOT\match-center\.venv\Scripts\python.exe" `
@@ -71,50 +59,24 @@ while ($true) {
             "$ROOT\match-center" "$LOGS\match-center.log" "$LOGS\match-center-err.log"
         $revived += "匹配中心"
     }
-    if (-not (Test-Url "http://localhost:8013/health")) {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "$ROOT\projects\GlowMeet\backend\glowmeet.exe"
-        $psi.WorkingDirectory = "$ROOT\projects\GlowMeet\backend"
-        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-        $psi.RedirectStandardOutput = $false; $psi.RedirectStandardError = $false
-        $psi.EnvironmentVariables["PERSISTENCE"] = "memory"
-        $psi.EnvironmentVariables["PORT"] = "8013"
-        $psi.EnvironmentVariables["X_CLIENT_ID"] = "dev-client-id"
-        $psi.EnvironmentVariables["X_CLIENT_SECRET"] = "dev-client-secret"
-        $psi.EnvironmentVariables["X_REDIRECT_URL"] = "http://localhost:3000/auth/x/callback"
-        $psi.EnvironmentVariables["APP_JWT_SECRET"] = "dev-secret"
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
-        $revived += "GlowMeet后端"
-    }
-    if (-not (Test-Url "http://127.0.0.1:8015/health/ready")) {
-        Start-Hidden "$ROOT\projects\shidduch-app\backend\.venv\Scripts\python.exe" `
-            @("-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8015") `
-            "$ROOT\projects\shidduch-app\backend" "$LOGS\shidduch-backend.log" "$LOGS\shidduch-backend-err.log"
-        $revived += "Shidduch后端"
-    }
-    if (-not (Test-Url "http://localhost:8123/api/health/ok")) {
-        Start-Process -FilePath "$ROOT\tools\start-wang-backend.cmd" -WindowStyle Hidden
-        $revived += "wang后端"
+    if (-not (Test-Url "http://127.0.0.1:8123/api/health/ok")) {
+        $jar = Get-ChildItem "$ROOT\projects\wang-ai-agent\target\wang-ai-agent-*.jar" -Exclude "*.original" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($jar) {
+            Start-Hidden "$ROOT\tools\jdk21-extracted\jdk-21.0.12.1+1\bin\java.exe" `
+                @("-jar", $jar.FullName) "$ROOT\projects\wang-ai-agent" "$LOGS\wang-backend.log" "$LOGS\wang-backend-err.log"
+            $revived += "wang后端"
+        }
     }
 
     # ---- 前端（vite，bash 分离式）----
-    if (-not (Test-Url "http://localhost:5176/")) {
-        Start-Process -FilePath "$ROOT\tools\start-frontend-ANL.cmd" -WindowStyle Hidden
+    if (-not (Test-Url "http://127.0.0.1:5176/")) {
+        Start-BashDetached "/d/xm/aiyuelao/projects/ANL" "npm run dev > /d/xm/aiyuelao/logs/anl-frontend.log 2>&1"
         $revived += "ANL前端"
     }
-    if (-not (Test-Url "http://localhost:3000/")) {
-        Start-Process -FilePath "$ROOT\tools\start-frontend-GlowMeet.cmd" -WindowStyle Hidden
-        $revived += "GlowMeet前端"
+    if (-not (Test-Url "http://127.0.0.1:5175/")) {
+        Start-BashDetached "/d/xm/aiyuelao/projects/wang-ai-agent/wang-ai-agent-frontend" "npm run dev > /d/xm/aiyuelao/logs/wang-frontend.log 2>&1"
+        $revived += "wang前端"
     }
-    if (-not (Test-Url "http://localhost:5174/")) {
-        Start-Process -FilePath "$ROOT\tools\start-frontend-Shidduch.cmd" -WindowStyle Hidden
-        $revived += "Shidduch前端"
-    }
-    # 2026-09-07 应用户要求停用 wang 前端(5175)的自动拉起：用户不希望它自动启动
-    # if (-not (Test-Url "http://localhost:5175/")) {
-    #     Start-Process -FilePath "$ROOT\tools\start-frontend-wang.cmd" -WindowStyle Hidden
-    #     $revived += "wang前端"
-    # }
 
     if ($revived.Count -gt 0) {
         $line = "{0} [看门狗] 自动重启: {1}" -f (Get-Date -Format "HH:mm:ss"), ($revived -join ", ")

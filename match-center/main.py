@@ -1,13 +1,11 @@
 # AI月老 · 匹配中心
 # 三层漏斗匹配打分服务：硬筛(规则) -> 粗排(加权算法) -> 精排(LLM可选/规则兜底)
-# 端口: 8016   数据: data/matchcenter/users.json
+# 端口: 8016   数据: data/matchcenter/users.json + matches.json
 import hashlib
 import json
 import math
 import os
-import re
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +13,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-DATA_FILE = Path(os.environ.get("MATCH_CENTER_DATA", r"D:\xm\aiyuelao\data\matchcenter\users.json"))
+DATA_DIR = Path(os.environ.get("MATCH_CENTER_DATA_DIR", r"D:\xm\aiyuelao\data\matchcenter"))
+DATA_FILE = Path(os.environ.get("MATCH_CENTER_DATA", str(DATA_DIR / "users.json")))
+MATCH_FILE = DATA_FILE.parent / "matches.json"
 LLM_KEY = os.environ.get("DASHSCOPE_API_KEY", "").strip()
 LLM_MODEL = os.environ.get("DASHSCOPE_MODEL", "qwen-plus")
 LLM_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -23,20 +23,37 @@ LLM_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 # 粗排权重：兴趣40% + 距离30% + 年龄20% + 活跃度10%
 W_HOBBY, W_LOC, W_AGE, W_ACT = 0.4, 0.3, 0.2, 0.1
 LOC_DECAY = 0.03          # 距离衰减系数：同城≈1，百公里≈0.05
-MAX_PAIRS_FOR_FINE = 10   # 精排只算粗分前 N 对，控制 LLM 成本
+MAX_PAIRS_FOR_FINE = 10   # 精排至少算粗分前 N 对，控制 LLM 成本
+MAX_FINE_WINDOW = 50      # 精排窗口上限：翻页时最多精排到第 50 名，防止 LLM 成本随页码无限增长
+MAX_PAGE_SIZE = 50        # 单页最大返回条数
+AUTO_BAN_REPORTS = int(os.environ.get("AUTO_BAN_REPORTS", "3"))  # 被举报达该次数自动封禁
 
-_vec_lock = threading.Lock()
+_lock = threading.Lock()
 app = FastAPI(title="AI月老 · 匹配中心", description="硬筛→粗排→精排 三层漏斗匹配打分")
 
 # ------------------------------------------------------------------
 # 数据存储（内存 + JSON 落盘，重启不丢）
+#   users.json   — 用户档案与状态（含黑名单/封禁/举报数）
+#   matches.json — 已配对记录（用于发现页去重）
 # ------------------------------------------------------------------
 USERS: dict[str, dict] = {}
+MATCHED: set[tuple[str, str]] = set()
 
 
-def _save():
+def _match_key(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+def _save_users():
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     DATA_FILE.write_text(json.dumps(list(USERS.values()), ensure_ascii=False), encoding="utf-8")
+
+
+def _save_matches():
+    MATCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MATCH_FILE.write_text(
+        json.dumps(sorted([list(p) for p in MATCHED]), ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _load():
@@ -44,6 +61,13 @@ def _load():
         try:
             for u in json.loads(DATA_FILE.read_text(encoding="utf-8")):
                 USERS[u["id"]] = u
+        except Exception:
+            pass
+    if MATCH_FILE.exists():
+        try:
+            for pair in json.loads(MATCH_FILE.read_text(encoding="utf-8")):
+                if isinstance(pair, list) and len(pair) == 2:
+                    MATCHED.add(_match_key(pair[0], pair[1]))
         except Exception:
             pass
 
@@ -65,10 +89,27 @@ class UserIn(BaseModel):
     lat: float | None = None
     lng: float | None = None
     active_at: str | None = None          # ISO 时间
+    blocked: list[str] = Field(default_factory=list)   # 本人拉黑的用户 id（单向生效）
+    banned: bool = False                  # 被举报/运营封禁
+    reports: int = 0                      # 被举报次数
 
 
 class BulkIn(BaseModel):
     users: list[UserIn]
+
+
+class PairIn(BaseModel):
+    a: str
+    b: str
+
+
+class BlockIn(BaseModel):
+    target: str
+
+
+class ReportIn(BaseModel):
+    target: str
+    reason: str = ""
 
 
 # ------------------------------------------------------------------
@@ -165,10 +206,19 @@ def _activity_score(u: dict) -> float:
 # ------------------------------------------------------------------
 # 三层漏斗
 # ------------------------------------------------------------------
-def _hard_filter(a: dict, b: dict) -> bool:
-    """硬筛：性别（演示按异性匹配）、年龄都在合理区间。生产可加 geohash 网格/黑名单。"""
+def _hard_filter(a: dict, b: dict, include_matched: bool = False) -> bool:
+    """第0层硬筛（零成本规则）：性别、封禁、双向黑名单、已配对去重。
+
+    生产可再加 geohash 网格、实名/年龄区间等。
+    """
     ga, gb = (a.get("gender") or "f")[0], (b.get("gender") or "f")[0]
     if ga == gb:
+        return False
+    if b.get("banned"):
+        return False
+    if b["id"] in (a.get("blocked") or []) or a["id"] in (b.get("blocked") or []):
+        return False
+    if not include_matched and _match_key(a["id"], b["id"]) in MATCHED:
         return False
     return True
 
@@ -248,25 +298,36 @@ async def _llm_fine(a: dict, b: dict, coarse: float) -> tuple[int, str, str] | N
         return None
 
 
+# ------------------------------------------------------------------
+# 基础接口
+# ------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "users": len(USERS), "llm": bool(LLM_KEY)}
+    return {
+        "status": "ok",
+        "users": len(USERS),
+        "matched_pairs": len(MATCHED),
+        "banned": sum(1 for u in USERS.values() if u.get("banned")),
+        "llm": bool(LLM_KEY),
+    }
 
 
 @app.post("/users/upsert")
 def upsert_user(u: UserIn):
-    with _vec_lock:
-        USERS[u.id] = {**USERS.get(u.id, {}), **u.model_dump()}
-        _save()
+    with _lock:
+        # exclude_unset：ANL 同步时不带 blocked/banned/reports，不能把服务端状态覆盖掉
+        patch = u.model_dump(exclude_unset=True)
+        USERS[u.id] = {**USERS.get(u.id, {}), **patch}
+        _save_users()
     return {"ok": True, "total": len(USERS)}
 
 
 @app.post("/users/bulk")
 def bulk(users: BulkIn):
-    with _vec_lock:
+    with _lock:
         for u in users.users:
-            USERS[u.id] = {**USERS.get(u.id, {}), **u.model_dump()}
-        _save()
+            USERS[u.id] = {**USERS.get(u.id, {}), **u.model_dump(exclude_unset=True)}
+        _save_users()
     return {"ok": True, "total": len(USERS)}
 
 
@@ -280,33 +341,154 @@ def get_user(user_id: str):
 
 @app.delete("/users/{user_id}")
 def delete_user(user_id: str):
-    with _vec_lock:
+    with _lock:
         if USERS.pop(user_id, None) is None:
             raise HTTPException(404, "user not found")
-        _save()
+        for k in [k for k in MATCHED if user_id in k]:
+            MATCHED.discard(k)
+        _save_users()
+        _save_matches()
     return {"ok": True, "total": len(USERS)}
 
 
+# ------------------------------------------------------------------
+# 黑名单 / 举报 / 封禁
+# ------------------------------------------------------------------
+@app.post("/users/{user_id}/block")
+def block_user(user_id: str, body: BlockIn):
+    """把 target 加入 user_id 的黑名单（单向：user_id 不再看到 target）。"""
+    with _lock:
+        u = USERS.get(user_id)
+        if not u:
+            raise HTTPException(404, "user not found")
+        blocked = set(u.get("blocked") or [])
+        blocked.add(body.target)
+        u["blocked"] = sorted(blocked)
+        _save_users()
+    return {"ok": True, "blocked": u["blocked"]}
+
+
+@app.delete("/users/{user_id}/block/{target}")
+def unblock_user(user_id: str, target: str):
+    with _lock:
+        u = USERS.get(user_id)
+        if not u:
+            raise HTTPException(404, "user not found")
+        u["blocked"] = [x for x in (u.get("blocked") or []) if x != target]
+        _save_users()
+    return {"ok": True, "blocked": u["blocked"]}
+
+
+@app.get("/users/{user_id}/blocked")
+def list_blocked(user_id: str):
+    u = USERS.get(user_id)
+    if not u:
+        raise HTTPException(404, "user not found")
+    return {"user": user_id, "blocked": u.get("blocked") or []}
+
+
+@app.post("/users/{user_id}/report")
+def report_user(user_id: str, body: ReportIn):
+    """举报某用户；累计达 AUTO_BAN_REPORTS 次自动封禁。"""
+    with _lock:
+        if user_id not in USERS:
+            raise HTTPException(404, "reporter not found")
+        t = USERS.get(body.target)
+        if not t:
+            raise HTTPException(404, "target not found")
+        t["reports"] = int(t.get("reports", 0)) + 1
+        auto_banned = False
+        if t["reports"] >= AUTO_BAN_REPORTS and not t.get("banned"):
+            t["banned"] = True
+            auto_banned = True
+        _save_users()
+    return {"ok": True, "target": body.target, "reports": t["reports"],
+            "banned": bool(t.get("banned")), "auto_banned": auto_banned}
+
+
+@app.post("/users/{user_id}/ban")
+def ban_user(user_id: str):
+    with _lock:
+        u = USERS.get(user_id)
+        if not u:
+            raise HTTPException(404, "user not found")
+        u["banned"] = True
+        _save_users()
+    return {"ok": True, "user": user_id, "banned": True}
+
+
+@app.post("/users/{user_id}/unban")
+def unban_user(user_id: str):
+    with _lock:
+        u = USERS.get(user_id)
+        if not u:
+            raise HTTPException(404, "user not found")
+        u["banned"] = False
+        u["reports"] = 0
+        _save_users()
+    return {"ok": True, "user": user_id, "banned": False}
+
+
+# ------------------------------------------------------------------
+# 已配对记录（发现页去重）
+# ------------------------------------------------------------------
+@app.post("/matches/record")
+def record_match(body: PairIn):
+    with _lock:
+        MATCHED.add(_match_key(body.a, body.b))
+        _save_matches()
+    return {"ok": True, "matched_pairs": len(MATCHED)}
+
+
+@app.delete("/matches/record")
+def remove_match(body: PairIn):
+    with _lock:
+        MATCHED.discard(_match_key(body.a, body.b))
+        _save_matches()
+    return {"ok": True, "matched_pairs": len(MATCHED)}
+
+
+@app.get("/matches/{user_id}")
+def list_matches(user_id: str):
+    if user_id not in USERS:
+        raise HTTPException(404, "user not found")
+    return {"user": user_id, "matches": sorted(b for k in MATCHED if user_id in k for b in k if b != user_id)}
+
+
+# ------------------------------------------------------------------
+# 发现（三层漏斗 + 分页）
+# ------------------------------------------------------------------
 @app.get("/discover/{user_id}")
-async def discover(user_id: str, top_n: int = 10):
-    """三层漏斗：硬筛 -> 粗排全量 -> 精排topN -> 最终分 = 粗排50% + 精排50%。"""
+async def discover(user_id: str, top_n: int = 10, page: int = 1, include_matched: bool = False):
+    """三层漏斗：硬筛 -> 粗排全量 -> 精排窗口 -> 最终分 = 粗排50% + 精排50%。
+
+    - top_n：每页条数（1..50），保留旧参数名以兼容既有调用
+    - page：页码，从 1 开始
+    - include_matched：是否包含已配对过的人（默认 False，即自动去重）
+    """
     a = USERS.get(user_id)
     if not a:
         raise HTTPException(404, "user not found, sync first")
 
-    # 第0层 硬筛 + 第1层 粗排
+    page = max(1, page)
+    top_n = max(1, min(top_n, MAX_PAGE_SIZE))
+
+    # 第0层 硬筛 + 第1层 粗排（全量，零成本）
     coarse_list = []
     for uid, b in USERS.items():
-        if uid == user_id or not _hard_filter(a, b):
+        if uid == user_id or not _hard_filter(a, b, include_matched):
             continue
         c = _coarse(a, b)
         coarse_list.append((c["coarse"], c, b))
 
     coarse_list.sort(key=lambda x: x[0], reverse=True)
+    total = len(coarse_list)
 
-    # 第2层 精排：只算 top N
+    # 第2层 精排：只算窗口内的人（窗口随页码扩大但封顶，控制 LLM 成本）
+    need = page * top_n
+    window = min(total, max(MAX_PAIRS_FOR_FINE, min(need, MAX_FINE_WINDOW)))
     results = []
-    for coarse_score, c, b in coarse_list[:max(top_n, MAX_PAIRS_FOR_FINE)]:
+    for coarse_score, c, b in coarse_list[:window]:
         mutual = _mutual_fit(a, b)
         fine = await _llm_fine(a, b, coarse_score)
         if fine is None:
@@ -327,7 +509,17 @@ async def discover(user_id: str, top_n: int = 10):
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return {"user": user_id, "total": len(results), "items": results[:top_n]}
+    start = (page - 1) * top_n
+    items = results[start:start + top_n]
+    return {
+        "user": user_id,
+        "total": total,                       # 通过硬筛的候选人总数
+        "page": page,
+        "page_size": top_n,
+        "window": window,                     # 本次精排覆盖的名次范围
+        "has_more": start + len(items) < total,
+        "items": items,
+    }
 
 
 if __name__ == "__main__":

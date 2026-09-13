@@ -1,5 +1,7 @@
 # 运行时与工具包
 /tools/
+# 已移除项目的 git bundle 备份（体积大，不入库）
+/_archive/
 # 数据与日志
 /data/
 /logs/
