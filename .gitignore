@@ -31,3 +31,6 @@ build/
 # 系统文件
 Thumbs.db
 .DS_Store
+# 安卓构建产物
+*.apk
+*.idsig

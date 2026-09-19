@@ -206,30 +206,38 @@ def _activity_score(u: dict) -> float:
 # ------------------------------------------------------------------
 # 三层漏斗
 # ------------------------------------------------------------------
-def _hard_filter(a: dict, b: dict, include_matched: bool = False) -> bool:
+def _hard_filter(a: dict, b: dict, include_matched: bool = False, mode: str = "date") -> bool:
     """第0层硬筛（零成本规则）：性别、封禁、双向黑名单、已配对去重。
 
+    约跑步模式（mode=run）：不限性别、已约过的人仍然可见（跑伴可反复约）。
     生产可再加 geohash 网格、实名/年龄区间等。
     """
-    ga, gb = (a.get("gender") or "f")[0], (b.get("gender") or "f")[0]
-    if ga == gb:
-        return False
+    if mode != "run":
+        ga, gb = (a.get("gender") or "f")[0], (b.get("gender") or "f")[0]
+        if ga == gb:
+            return False
+        if not include_matched and _match_key(a["id"], b["id"]) in MATCHED:
+            return False
     if b.get("banned"):
         return False
     if b["id"] in (a.get("blocked") or []) or a["id"] in (b.get("blocked") or []):
         return False
-    if not include_matched and _match_key(a["id"], b["id"]) in MATCHED:
-        return False
     return True
 
 
-def _coarse(a: dict, b: dict) -> dict:
-    """粗排：加权公式 0-100。"""
-    hobby = _hobby_sim(a, b)
+def _coarse(a: dict, b: dict, mode: str = "date") -> dict:
+    """粗排：加权公式 0-100。约跑步模式距离权重拉满：距离75% + 活跃度25%。"""
     dist = _distance_km(a, b)
     loc = math.exp(-dist * LOC_DECAY) if dist is not None else 0.5
-    age = _age_score(a, b)
     act = _activity_score(b)
+    if mode == "run":
+        score = round((loc * 0.75 + act * 0.25) * 100, 1)
+        return {
+            "coarse": score, "distance_km": dist,
+            "parts": {"距离分": round(loc * 100, 1), "活跃度": round(act * 100, 1)},
+        }
+    hobby = _hobby_sim(a, b)
+    age = _age_score(a, b)
     score = round((hobby * W_HOBBY + loc * W_LOC + age * W_AGE + act * W_ACT) * 100, 1)
     return {
         "coarse": score, "distance_km": dist,
@@ -267,6 +275,18 @@ def _rule_fine(a: dict, b: dict, mutual: float, dist: float | None) -> tuple[int
         else f"你好呀，看你也在{b.get('city') or '这里'}，周末一般喜欢干嘛？"
     )
     return score, reason, icebreaker
+
+
+def _run_fine(a: dict, b: dict, dist: float | None) -> tuple[str, str]:
+    """约跑步模式的理由与开场白（纯规则，不调 LLM）。"""
+    parts = []
+    if dist is not None:
+        parts.append(f"相距{dist:.0f}公里" if dist >= 1 else f"就在你身边（{dist * 1000:.0f}米）")
+    common = sorted(set(a.get("tags", [])) & set(b.get("tags", [])))
+    if common:
+        parts.append("共同标签：" + "、".join(common[:3]))
+    parts.append("对方也在找跑伴")
+    return "；".join(parts) + "。", "看到你也在附近，一起约个跑步？"
 
 
 async def _llm_fine(a: dict, b: dict, coarse: float) -> tuple[int, str, str] | None:
@@ -459,12 +479,15 @@ def list_matches(user_id: str):
 # 发现（三层漏斗 + 分页）
 # ------------------------------------------------------------------
 @app.get("/discover/{user_id}")
-async def discover(user_id: str, top_n: int = 10, page: int = 1, include_matched: bool = False):
+async def discover(user_id: str, top_n: int = 10, page: int = 1, include_matched: bool = False,
+                   mode: str = "date", radius_km: float | None = None):
     """三层漏斗：硬筛 -> 粗排全量 -> 精排窗口 -> 最终分 = 粗排50% + 精排50%。
 
     - top_n：每页条数（1..50），保留旧参数名以兼容既有调用
     - page：页码，从 1 开始
     - include_matched：是否包含已配对过的人（默认 False，即自动去重）
+    - mode：date（默认，交友打分）/ run（约跑步：距离优先、跳过性别硬筛、精排不调 LLM）
+    - radius_km：约跑步模式可按公里数过滤候选人
     """
     a = USERS.get(user_id)
     if not a:
@@ -472,31 +495,39 @@ async def discover(user_id: str, top_n: int = 10, page: int = 1, include_matched
 
     page = max(1, page)
     top_n = max(1, min(top_n, MAX_PAGE_SIZE))
+    is_run = mode == "run"
 
     # 第0层 硬筛 + 第1层 粗排（全量，零成本）
     coarse_list = []
     for uid, b in USERS.items():
-        if uid == user_id or not _hard_filter(a, b, include_matched):
+        if uid == user_id or not _hard_filter(a, b, include_matched, mode):
             continue
-        c = _coarse(a, b)
+        c = _coarse(a, b, mode)
+        if is_run and radius_km is not None and c["distance_km"] is not None \
+                and c["distance_km"] > radius_km:
+            continue
         coarse_list.append((c["coarse"], c, b))
 
     coarse_list.sort(key=lambda x: x[0], reverse=True)
     total = len(coarse_list)
 
-    # 第2层 精排：只算窗口内的人（窗口随页码扩大但封顶，控制 LLM 成本）
+    # 第2层 精排：只算窗口内的人（约跑模式纯规则零成本；交友模式窗口封顶控制 LLM 成本）
     need = page * top_n
-    window = min(total, max(MAX_PAIRS_FOR_FINE, min(need, MAX_FINE_WINDOW)))
+    window = total if is_run else min(total, max(MAX_PAIRS_FOR_FINE, min(need, MAX_FINE_WINDOW)))
     results = []
     for coarse_score, c, b in coarse_list[:window]:
-        mutual = _mutual_fit(a, b)
-        fine = await _llm_fine(a, b, coarse_score)
-        if fine is None:
-            fine_score, reason, icebreaker = _rule_fine(a, b, mutual, c["distance_km"])
-            fine_src = "规则版（未配置LLM）"
+        if is_run:
+            reason, icebreaker = _run_fine(a, b, c["distance_km"])
+            fine_score, fine_src = coarse_score, "约跑模式（距离优先）"
         else:
-            fine_score, reason, icebreaker = fine
-            fine_src = f"LLM:{LLM_MODEL}"
+            mutual = _mutual_fit(a, b)
+            fine = await _llm_fine(a, b, coarse_score)
+            if fine is None:
+                fine_score, reason, icebreaker = _rule_fine(a, b, mutual, c["distance_km"])
+                fine_src = "规则版（未配置LLM）"
+            else:
+                fine_score, reason, icebreaker = fine
+                fine_src = f"LLM:{LLM_MODEL}"
         final = round(0.5 * coarse_score + 0.5 * fine_score, 1)
         u = {k: b.get(k) for k in ("id", "name", "gender", "age", "city", "tags", "bio", "active_at")}
         results.append({

@@ -29,6 +29,19 @@ function Start-Hidden($exe, $argList, $cwd, $outLog, $errLog) {
         -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 }
 
+# ---- 解析 node 绝对路径（看门狗环境可能没有用户 PATH，裸 "node" 会静默启动失败）----
+$script:NODE_EXE = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (-not $script:NODE_EXE) {
+    $candidates = @(
+        "$env:ProgramFiles\nodejs\node.exe",
+        "${env:ProgramFiles(x86)}\nodejs\node.exe",
+        "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+    )
+    $candidates += Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 4 -Filter node.exe `
+        -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName
+    $script:NODE_EXE = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+
 # 前端/Java 类：bash 完全分离式启动（cmd 包装会被连带回收，实测 bash 方式最稳定）
 function Start-BashDetached($bashCwd, $cmd) {
     Start-Process -FilePath "C:\Program Files\Git\bin\bash.exe" `
@@ -50,8 +63,13 @@ while ($true) {
 
     # ---- 后端 ----
     if (-not (Test-Url "http://127.0.0.1:3001/api/health")) {
-        Start-Hidden "node" "server-minimal.js" "$ROOT\projects\ANL\backend" "$LOGS\anl-backend.log" "$LOGS\anl-backend-err.log"
-        $revived += "ANL后端"
+        if ($script:NODE_EXE) {
+            Start-Hidden $script:NODE_EXE "server-minimal.js" "$ROOT\projects\ANL\backend" "$LOGS\anl-backend.log" "$LOGS\anl-backend-err.log"
+            $revived += "ANL后端"
+        } else {
+            $line = "{0} [看门狗] 找不到 node.exe，无法拉起 ANL后端" -f (Get-Date -Format "HH:mm:ss")
+            Add-Content -Path "$LOGS\watchdog.log" -Value $line
+        }
     }
     if (-not (Test-Url "http://127.0.0.1:8016/health")) {
         Start-Hidden "$ROOT\match-center\.venv\Scripts\python.exe" `
