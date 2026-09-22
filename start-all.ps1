@@ -1,13 +1,14 @@
 ﻿# ============================================================
 # AI月老 - 一键启动核心服务（原生进程，无 Docker）
 #
-# 收敛后的服务清单（6 项）：
-#   MySQL 3306             wang-ai-agent 对话记忆
-#   ANL 后端 3001          主壳（内存模式 server-minimal.js）
+# 收敛后的服务清单（7 项）：
+#   MySQL 3306             wang-ai-agent 对话记忆 + 微聊数据库
+#   ANL 后端 3001          主壳（内存模式 server-minimal.js，约跑步仍在用）
 #   ANL 前端 5176          React + Vite
 #   匹配中心 8016          三层漏斗打分核心
 #   wang 后端 8123         AI 分身对话（Spring Boot）
 #   wang 前端 5175         Vue3
+#   微聊后端 3002          仿微信服务（好友/聊天/位置/朋友圈，MySQL 持久化）
 #
 # 每个服务启动前先探测端口，已在线自动跳过，可安全重复执行
 # 用法: 双击「启动AI月老.bat」或 powershell -File start-all.ps1
@@ -40,9 +41,9 @@ function Start-BashDetached($bashCwd, $cmd) {
 
 # ---- 1. MySQL（wang-ai-agent 依赖）----
 if (Test-NetPort 3306) {
-    Write-Host "[1/6] MySQL 已在线，跳过"
+    Write-Host "[1/7] MySQL 已在线，跳过"
 } else {
-    Write-Host "[1/6] 启动 MySQL (3306)..."
+    Write-Host "[1/7] 启动 MySQL (3306)..."
     Start-Process -FilePath "$ROOT\tools\mysql-extracted\mysql-8.0.42-winx64\bin\mysqld.exe" `
         -ArgumentList "--no-defaults","--datadir=D:/xm/aiyuelao/data/mysql","--port=3306","--console" `
         -WindowStyle Hidden -RedirectStandardOutput "$LOGS\mysql.log" -RedirectStandardError "$LOGS\mysql-err.log"
@@ -51,27 +52,27 @@ if (Test-NetPort 3306) {
 
 # ---- 2. ANL 后端 ----
 if (Test-NetPort 3001) {
-    Write-Host "[2/6] ANL后端 已在线，跳过"
+    Write-Host "[2/7] ANL后端 已在线，跳过"
 } else {
-    Write-Host "[2/6] 启动 ANL 后端 (3001, 内存模式)..."
+    Write-Host "[2/7] 启动 ANL 后端 (3001, 内存模式)..."
     Start-Hidden "node" "server-minimal.js" "$ROOT\projects\ANL\backend" "$LOGS\anl-backend.log" "$LOGS\anl-backend-err.log"
     Start-Sleep 3
 }
 
 # ---- 3. ANL 前端 ----
 if (Test-NetPort 5176) {
-    Write-Host "[3/6] ANL前端 已在线，跳过"
+    Write-Host "[3/7] ANL前端 已在线，跳过"
 } else {
-    Write-Host "[3/6] 启动 ANL 前端 (5176)..."
+    Write-Host "[3/7] 启动 ANL 前端 (5176)..."
     Start-BashDetached "/d/xm/aiyuelao/projects/ANL" "npm run dev > /d/xm/aiyuelao/logs/anl-frontend.log 2>&1"
     Start-Sleep 3
 }
 
 # ---- 4. 匹配中心（三层漏斗打分核心）----
 if (Test-NetPort 8016) {
-    Write-Host "[4/6] 匹配中心 已在线，跳过"
+    Write-Host "[4/7] 匹配中心 已在线，跳过"
 } else {
-    Write-Host "[4/6] 启动 匹配中心 (8016, 三层漏斗打分核心)..."
+    Write-Host "[4/7] 启动 匹配中心 (8016, 三层漏斗打分核心)..."
     Start-Hidden "$ROOT\match-center\.venv\Scripts\python.exe" `
         @("-m","uvicorn","main:app","--host","127.0.0.1","--port","8016") `
         "$ROOT\match-center" "$LOGS\match-center.log" "$LOGS\match-center-err.log"
@@ -79,9 +80,9 @@ if (Test-NetPort 8016) {
 
 # ---- 5. wang-ai-agent 后端 ----
 if (Test-NetPort 8123) {
-    Write-Host "[5/6] wang后端 已在线，跳过"
+    Write-Host "[5/7] wang后端 已在线，跳过"
 } else {
-    Write-Host "[5/6] 启动 wang-ai-agent 后端 (8123)..."
+    Write-Host "[5/7] 启动 wang-ai-agent 后端 (8123)..."
     $jar = Get-ChildItem "$ROOT\projects\wang-ai-agent\target\wang-ai-agent-*.jar" -Exclude "*.original" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($jar) {
         Start-Hidden "$ROOT\tools\jdk21-extracted\jdk-21.0.12.1+1\bin\java.exe" `
@@ -93,10 +94,20 @@ if (Test-NetPort 8123) {
 
 # ---- 6. wang-ai-agent 前端 ----
 if (Test-NetPort 5175) {
-    Write-Host "[6/6] wang前端 已在线，跳过"
+    Write-Host "[6/7] wang前端 已在线，跳过"
 } else {
-    Write-Host "[6/6] 启动 wang-ai-agent 前端 (5175)..."
+    Write-Host "[6/7] 启动 wang-ai-agent 前端 (5175)..."
     Start-BashDetached "/d/xm/aiyuelao/projects/wang-ai-agent/wang-ai-agent-frontend" "npm run dev > /d/xm/aiyuelao/logs/wang-frontend.log 2>&1"
+}
+
+# ---- 7. 微聊后端（仿微信：好友/单聊群聊/实时位置/朋友圈）----
+if (Test-NetPort 3002) {
+    Write-Host "[7/7] 微聊后端 已在线，跳过"
+} else {
+    Write-Host "[7/7] 启动 微聊后端 (3002, MySQL 持久化)..."
+    $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+    if (-not $nodeExe) { $nodeExe = "$env:ProgramFiles\nodejs\node.exe" }
+    Start-Hidden $nodeExe "$ROOT\wechat-backend\src\index.js" "$ROOT\wechat-backend" "$LOGS\weiliao-backend.log" "$LOGS\weiliao-backend-err.log"
 }
 
 # ---- 看门狗（若未运行）----
@@ -117,7 +128,8 @@ $checks = @(
     @{n="ANL前端";   u="http://127.0.0.1:5176/"},
     @{n="匹配中心";  u="http://127.0.0.1:8016/health"},
     @{n="wang后端";  u="http://127.0.0.1:8123/api/health/ok"},
-    @{n="wang前端";  u="http://127.0.0.1:5175/"}
+    @{n="wang前端";  u="http://127.0.0.1:5175/"},
+    @{n="微聊后端";  u="http://127.0.0.1:3002/api/health"}
 )
 $fail = 0
 foreach ($c in $checks) {

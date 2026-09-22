@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>微聊手表</title>
+<script src="./socket.io.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#000; color:#eee; font-size:15px; }
+  input,button { font-family:inherit; border:none; outline:none; }
+  .screen { position:absolute; inset:0; display:none; flex-direction:column; background:#000; }
+  .screen.on { display:flex; }
+  .hd { flex:none; padding:10px 12px 6px; font-size:14px; color:#0cd26b; display:flex; align-items:center; }
+  .hd .bk { color:#888; margin-right:10px; }
+  .bd { flex:1; overflow-y:auto; padding:0 12px 16px; }
+  .cell { display:flex; align-items:center; padding:11px 8px; border-bottom:1px solid #1c1c1c; }
+  .cell:active { background:#161616; }
+  .cell .grow { flex:1; min-width:0; }
+  .cell .nm { font-size:15px; }
+  .cell .sub { font-size:12px; color:#8a8a8a; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cell .tm { font-size:11px; color:#666; margin-left:8px; }
+  .cell .bdg { min-width:17px; height:17px; padding:0 4px; border-radius:9px; background:#fa5151; color:#fff; font-size:11px;
+               display:flex; align-items:center; justify-content:center; margin-left:8px; }
+  .inp { width:100%; padding:10px 12px; background:#161616; border-radius:10px; color:#eee; margin-bottom:10px; font-size:15px; }
+  .inp::placeholder { color:#555; }
+  .btn { display:block; width:100%; padding:11px; background:#0cd26b; color:#00220f; border-radius:10px; font-size:16px; font-weight:600; text-align:center; }
+  .btn:active { opacity:.8; }
+  .btn.plain { background:#1d1d1d; color:#eee; }
+  .qr { display:flex; gap:8px; }
+  .qr .btn { flex:1; padding:10px 0; font-size:14px; }
+  .hint { font-size:11px; color:#555; text-align:center; margin-top:12px; line-height:1.7; }
+  .toast { position:fixed; left:50%; top:40%; transform:translateX(-50%); background:rgba(40,40,40,.95); color:#fff;
+           padding:9px 16px; border-radius:9px; font-size:13px; z-index:99; display:none; max-width:86%; text-align:center; }
+  .empty { text-align:center; color:#555; padding:50px 16px; font-size:13px; }
+  .msg { max-width:82%; margin:6px 0; padding:8px 11px; border-radius:11px; font-size:14px; line-height:1.5; word-break:break-word; }
+  .msg.them { background:#1d1d1d; border-top-left-radius:3px; }
+  .msg.mine { background:#0b5c31; margin-left:auto; border-top-right-radius:3px; }
+  .msg.sys { background:transparent; color:#666; font-size:11px; text-align:center; margin:8px auto; max-width:100%; }
+  .msg.loc { color:#0cd26b; }
+  .quick { display:flex; flex-wrap:wrap; gap:7px; padding:9px 12px 14px; }
+  .quick button { flex:1 1 28%; padding:9px 2px; background:#1d1d1d; color:#eee; border-radius:9px; font-size:13px; }
+  .quick button:active { background:#0cd26b; color:#00220f; }
+  .gps { font-size:11px; color:#0cd26b; }
+  .gps.off { color:#fa5151; }
+</style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+
+<div class="screen" id="scr-setup">
+  <div class="hd">微聊 · 手表版</div>
+  <div class="bd" style="padding-top:14px">
+    <input class="inp" id="inServer" placeholder="服务器 http://IP:3002">
+    <button class="btn" onclick="testServer()">连接</button>
+    <p class="hint">手机/电脑上先启动微聊后端<br>手表与服务器同一局域网</p>
+  </div>
+</div>
+
+<div class="screen" id="scr-login">
+  <div class="hd">微聊 · 登录</div>
+  <div class="bd" style="padding-top:14px">
+    <input class="inp" id="inPhone" type="tel" maxlength="11" placeholder="手机号">
+    <input class="inp" id="inCode" type="tel" maxlength="6" placeholder="验证码 123456">
+    <button class="btn" onclick="doLogin()">登录</button>
+    <p class="hint">与手机端共用账号<br>开发模式验证码 123456</p>
+  </div>
+</div>
+
+<div class="screen" id="scr-main">
+  <div class="hd">微聊 <span class="gps" id="gpsState" style="margin-left:auto">定位中…</span></div>
+  <div class="bd" id="chatList"></div>
+</div>
+
+<div class="screen" id="scr-chat">
+  <div class="hd"><span class="bk" onclick="back()">‹</span><span id="chatTitle">聊天</span></div>
+  <div class="bd" id="msgList"></div>
+  <div class="quick">
+    <button onclick="quickSend('好的')">好的</button>
+    <button onclick="quickSend('稍等')">稍等</button>
+    <button onclick="quickSend('在哪碰面？')">在哪？</button>
+    <button onclick="quickSend('马上到')">马上到</button>
+    <button onclick="sendMyLoc()">发位置</button>
+    <button onclick="showCustom()">自定义</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+const S = {
+  server: localStorage.getItem('wl_server') || '',
+  token: localStorage.getItem('wl_token') || '',
+  me: JSON.parse(localStorage.getItem('wl_me') || 'null'),
+  socket: null, convs: [], curConv: null, msgs: [], myLoc: null, repTimer: null, nav: [],
+};
+const $ = (id) => document.getElementById(id);
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(m,ms){ const t=$('toast'); t.textContent=m; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', ms||1800); }
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (S.token) opt.headers.Authorization = 'Bearer ' + S.token;
+  if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(S.server + path, opt);
+  let d = {}; try { d = await r.json(); } catch(e){}
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+function fmtT(t){ const d=new Date(t), n=new Date(); const hm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  return d.toDateString()===n.toDateString()?hm:(d.getMonth()+1)+'/'+d.getDate()+' '+hm; }
+
+window.onNativeLocation = function (lat, lng, acc) { S.myLoc = {lat,lng,acc}; $('gpsState').textContent='定位±'+Math.round(acc)+'m'; };
+window.onAppBack = function () {
+  if (S.nav.length) { back(); return; }
+  if (window.AndroidBridge) window.AndroidBridge.exitApp();
+};
+
+(function boot(){
+  $('inServer').value = S.server;
+  if (!S.server) { $('scr-setup').classList.add('on'); return; }
+  if (S.token && S.me) enterMain(); else $('scr-login').classList.add('on');
+})();
+
+async function testServer(){
+  let v = $('inServer').value.trim().replace(/\/+$/,'');
+  if (!/^https?:\/\//.test(v)) v = 'http://' + v;
+  try { const r = await fetch(v + '/api/health'); const d = await r.json(); if (!d.ok) throw 0;
+    S.server = v; localStorage.setItem('wl_server', v);
+    $('scr-setup').classList.remove('on'); $('scr-login').classList.add('on');
+  } catch(e) { toast('连不上服务器'); }
+}
+async function doLogin(){
+  const p = $('inPhone').value.trim(), c = $('inCode').value.trim() || '123456';
+  try {
+    await api('POST', '/api/auth/smscode', { phone: p });
+    const d = await api('POST', '/api/auth/login', { phone: p, code: c });
+    S.token = d.token; S.me = d.user;
+    localStorage.setItem('wl_token', d.token); localStorage.setItem('wl_me', JSON.stringify(d.user));
+    enterMain();
+  } catch(e){ toast(e.message); }
+}
+function enterMain(){
+  document.querySelectorAll('.screen').forEach(x=>x.classList.remove('on'));
+  $('scr-main').classList.add('on');
+  if (window.AndroidBridge) window.AndroidBridge.startLocation();
+  clearInterval(S.repTimer);
+  S.repTimer = setInterval(() => { if (S.myLoc) api('POST','/api/location/report',{lat:S.myLoc.lat,lng:S.myLoc.lng,accuracy:S.myLoc.acc||0}).catch(()=>{}); }, 8000);
+  connectSocket(); loadConvs();
+}
+function connectSocket(){
+  if (S.socket) S.socket.disconnect();
+  const s = io(S.server, { auth:{ token:S.token }, transports:['websocket','polling'] });
+  S.socket = s;
+  s.on('msg', p => {
+    if (S.curConv === p.conversation_id) { S.msgs.push(p.message); renderMsgs(true);
+      api('POST', `/api/conversations/${p.conversation_id}/read`, { last_msg_id: p.message.id }).catch(()=>{}); }
+    loadConvs();
+  });
+  s.on('conv_new', () => loadConvs());
+  s.on('msg_revoke', p => { if (S.curConv===p.conversation_id){ const m=S.msgs.find(x=>x.id===p.message_id); if(m) m.revoked=true; renderMsgs(); } loadConvs(); });
+}
+async function loadConvs(){
+  try { S.convs = (await api('GET','/api/conversations')).conversations; renderList(); } catch(e){}
+}
+function renderList(){
+  $('chatList').innerHTML = S.convs.length ? S.convs.map(c=>{
+    const name = c.type==='single' ? (c.peer?(c.peer.remark||c.peer.nickname):'用户') : c.name;
+    return `<div class="cell" onclick="openChat(${c.conversation_id},'${esc(name)}')">
+      <div class="grow"><div class="nm">${esc(name)}</div><div class="sub">${esc(c.last_message?c.last_message.preview:'')}</div></div>
+      <div class="tm">${c.last_message?fmtT(c.last_message.created_at):''}</div>
+      ${c.unread?`<div class="bdg">${c.unread>99?'99+':c.unread}</div>`:''}</div>`;
+  }).join('') : '<div class="empty">还没有聊天<br>先在手机端加好友</div>';
+}
+async function openChat(id, name){
+  S.curConv = id;
+  $('chatTitle').textContent = name;
+  document.querySelectorAll('.screen').forEach(x=>x.classList.remove('on'));
+  $('scr-chat').classList.add('on'); S.nav.push('scr-chat');
+  $('msgList').innerHTML = '<div class="empty">加载中…</div>';
+  const d = await api('GET', `/api/conversations/${id}/messages?limit=20`);
+  S.msgs = d.messages; renderMsgs(true);
+  const last = S.msgs[S.msgs.length-1];
+  if (last) api('POST', `/api/conversations/${id}/read`, { last_msg_id: last.id }).catch(()=>{});
+}
+function renderMsgs(scroll){
+  $('msgList').innerHTML = S.msgs.map(m=>{
+    if (m.type==='system') return `<div class="msg sys">${esc((m.content||{}).text)}</div>`;
+    if (m.revoked) return `<div class="msg sys">撤回了一条消息</div>`;
+    const me = m.sender_id === S.me.id;
+    let body = esc((m.content||{}).text||'');
+    if (m.type==='image') body='[图片]';
+    if (m.type==='voice') body='[语音 '+(m.content.duration||1)+'"]';
+    if (m.type==='location') body='<span class="loc">📍 位置：'+esc(m.content.label||'')+'</span>';
+    if (m.type==='share') body='<span class="loc">🧭 实时位置共享</span>';
+    if (m.type==='file') body='[文件]'+esc(m.content.name||'');
+    return `<div class="msg ${me?'mine':'them'}">${body}</div>`;
+  }).join('');
+  if (scroll) requestAnimationFrame(()=>{ $('msgList').scrollTop=$('msgList').scrollHeight; });
+}
+async function quickSend(t){
+  try {
+    const d = await api('POST', `/api/conversations/${S.curConv}/messages`, { type:'text', content:{ text:t } });
+    S.msgs.push(d.message); renderMsgs(true);
+  } catch(e){ toast(e.message); }
+}
+function showCustom(){
+  const t = prompt('输入消息'); if (t) quickSend(t);
+}
+async function sendMyLoc(){
+  if (!S.myLoc) return toast('还没定位');
+  try {
+    const d = await api('POST', `/api/conversations/${S.curConv}/messages`, { type:'location', content:{ lat:S.myLoc.lat, lng:S.myLoc.lng, label:'手表位置' } });
+    S.msgs.push(d.message); renderMsgs(true);
+  } catch(e){ toast(e.message); }
+}
+function back(){
+  document.querySelectorAll('.screen').forEach(x=>x.classList.remove('on'));
+  S.nav.pop();
+  $('scr-main').classList.add('on');
+  S.curConv = null; loadConvs();
+}
+</script>
+</body>
+</html>

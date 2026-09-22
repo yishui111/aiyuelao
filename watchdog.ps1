@@ -1,6 +1,6 @@
 ﻿# ============================================================
 # AI月老 - 服务看门狗（每 30 秒巡检，服务挂掉自动重启）
-# 监控：MySQL + ANL(前后端) + 匹配中心 + wang-ai-agent(前后端)
+# 监控：MySQL + ANL(前后端) + 匹配中心 + wang-ai-agent(前后端) + 微聊后端(3002)
 # 用法: powershell -ExecutionPolicy Bypass -File D:\xm\aiyuelao\watchdog.ps1
 # 日志: D:\xm\aiyuelao\logs\watchdog.log
 # ============================================================
@@ -68,6 +68,15 @@ while ($true) {
             $revived += "ANL后端"
         } else {
             $line = "{0} [看门狗] 找不到 node.exe，无法拉起 ANL后端" -f (Get-Date -Format "HH:mm:ss")
+            Add-Content -Path "$LOGS\watchdog.log" -Value $line
+        }
+    }
+    if (-not (Test-Url "http://127.0.0.1:3002/api/health")) {
+        if ($script:NODE_EXE) {
+            Start-Hidden $script:NODE_EXE "src/index.js" "$ROOT\wechat-backend" "$LOGS\weiliao-backend.log" "$LOGS\weiliao-backend-err.log"
+            $revived += "微聊后端"
+        } else {
+            $line = "{0} [看门狗] 找不到 node.exe，无法拉起 微聊后端" -f (Get-Date -Format "HH:mm:ss")
             Add-Content -Path "$LOGS\watchdog.log" -Value $line
         }
     }

@@ -1,0 +1,21 @@
+{
+  "name": "weiliao-backend",
+  "version": "1.0.0",
+  "description": "微聊(仿微信)后端服务:好友/单聊群聊/实时位置/朋友圈,REST+WebSocket,MySQL持久化",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test-e2e.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.4.0",
+    "mysql2": "^3.24.4",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}

@@ -25,6 +25,11 @@ Get-CimInstance Win32_Process |
     Where-Object { $_.Name -eq "node.exe" -and $_.CommandLine -like "*server-minimal*" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
+Write-Host "停止 微聊后端 (3002)..."
+Get-CimInstance Win32_Process |
+    Where-Object { $_.Name -eq "node.exe" -and $_.CommandLine -like "*src/index.js*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 Write-Host "停止 前端 (ANL 5176 / wang 5175)..."
 Get-CimInstance Win32_Process |
     Where-Object {
