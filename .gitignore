@@ -34,3 +34,4 @@ Thumbs.db
 # 安卓构建产物
 *.apk
 *.idsig
+测试结果/

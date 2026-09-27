@@ -132,13 +132,23 @@ $checks = @(
     @{n="微聊后端";  u="http://127.0.0.1:3002/api/health"}
 )
 $fail = 0
+function Test-Svc($u) {
+    # vite 只绑 IPv6 ::1（localhost 解析优先 v6），127.0.0.1 探不通时改试 [::1]
+    $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 8 $u 2>$null
+    if ($code -eq "200") { return $true }
+    if ($u.Contains("127.0.0.1")) {
+        $u6 = $u.Replace("127.0.0.1", "[::1]")
+        $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 8 $u6 2>$null
+        return ($code -eq "200")
+    }
+    return $false
+}
 foreach ($c in $checks) {
-    $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 8 $c.u 2>$null
-    if ($code -eq "200") {
-        Write-Host ("  OK   " + $c.n + " -> HTTP " + $code)
+    if (Test-Svc $c.u) {
+        Write-Host ("  OK   " + $c.n)
     } else {
         $fail++
-        Write-Host ("  FAIL " + $c.n + " (" + $c.u + " -> HTTP " + $code + ")")
+        Write-Host ("  FAIL " + $c.n + " (" + $c.u + ")")
     }
 }
 Write-Host ""

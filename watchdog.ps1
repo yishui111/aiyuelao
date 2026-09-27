@@ -11,7 +11,14 @@ New-Item -ItemType Directory -Force -Path $LOGS | Out-Null
 function Test-Url($url) {
     # 用 curl.exe 检测（--noproxy 不走系统代理，避免代理软件开启时误判）
     $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 6 $url 2>$null
-    return ($code -ge 200 -and $code -lt 500)
+    if ($code -ge 200 -and $code -lt 500) { return $true }
+    # vite 只绑 IPv6 ::1，127.0.0.1 探不到时改试 [::1]
+    if ($url -is [string] -and $url.Contains("127.0.0.1")) {
+        $u6 = $url.Replace("127.0.0.1", "[::1]")
+        $code = & curl.exe -s -o NUL -w "%{http_code}" --noproxy "*" --max-time 6 $u6 2>$null
+        return ($code -ge 200 -and $code -lt 500)
+    }
+    return $false
 }
 
 function Test-NetPort($port) {
